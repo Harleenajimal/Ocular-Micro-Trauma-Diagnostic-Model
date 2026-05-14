@@ -100,7 +100,7 @@ This project is a research and educational prototype and is not intended for cli
 
 The current system demonstrates proof-of-concept feasibility for detecting strain-related ocular movement patterns using AI-driven temporal analysis. Clinical validation and subject-independent testing are required before real-world deployment.
 
-Future Improvements
+Future Improvements:
 Subject-independent validation
 Multi-class trauma severity detection
 Blink instability analysis
@@ -110,6 +110,6 @@ Edge-device optimization
 Mobile deployment
 Explainable AI visualization
 Eye trajectory heatmaps
-Author
 
+Author:
 Developed as an advanced AI + Computer Vision research project focused on real-time ocular micro-trauma diagnostics using deep learning and sequential gaze analytics.
