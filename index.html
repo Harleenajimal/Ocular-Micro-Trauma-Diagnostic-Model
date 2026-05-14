@@ -1,0 +1,90 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Ocular Micro-Trauma Detector</title>
+    <meta name="description" content="Personalized real-time sub-concussive micro-trauma detection via CNN-LSTM eye tracking.">
+    <link rel="stylesheet" href="/static/style.css">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;800&display=swap" rel="stylesheet">
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/face_mesh.js" crossorigin="anonymous"></script>
+</head>
+<body>
+<div class="app-container">
+    <header>
+        <div class="badge">Personalized Baseline · CNN-LSTM</div>
+        <h1>Ocular Micro-Trauma <span>Detector</span></h1>
+        <p>Calibrates to <em>your</em> unique eye movement — then monitors for deviations</p>
+    </header>
+
+    <main class="dashboard">
+        <!-- Camera -->
+        <div class="video-section card glass">
+            <div class="card-label">Live Camera Feed</div>
+            <div class="video-wrapper">
+                <video id="input_video" autoplay playsinline></video>
+                <canvas id="output_canvas"></canvas>
+                <div class="scan-line"></div>
+            </div>
+
+            <!-- Calibration progress -->
+            <div id="calibSection" class="calib-section" style="display:none">
+                <div class="calib-label">Establishing personal baseline…</div>
+                <div class="calib-track"><div id="calibBar" class="calib-fill"></div></div>
+                <div class="calib-hint">Look naturally at the screen. Do not stare or strain.</div>
+            </div>
+
+            <div class="controls">
+                <button id="startBtn" class="btn primary">▶ Start Tracking</button>
+                <button id="recalBtn" class="btn tertiary" disabled>↺ Recalibrate</button>
+                <button id="stopBtn"  class="btn secondary" disabled>■ Stop</button>
+            </div>
+        </div>
+
+        <!-- Status -->
+        <div class="status-section card glass">
+            <div class="card-label">Diagnostic Assessment</div>
+
+            <div class="status-indicator">
+                <div class="ring-wrapper">
+                    <div class="ring"></div>
+                    <div class="ring-glow"></div>
+                </div>
+                <span id="statusText"    class="status-main">Awaiting Session…</span>
+                <span id="statusSubText" class="status-sub">Click Start Tracking to begin</span>
+            </div>
+
+            <div class="metrics">
+                <div class="metric">
+                    <span class="label">Risk Probability</span>
+                    <span class="value" id="probValue">—</span>
+                </div>
+                <div class="metric">
+                    <span class="label">Frames</span>
+                    <span class="value" id="framesValue">0 / 50</span>
+                </div>
+                <div class="metric">
+                    <span class="label">Blink Rate</span>
+                    <span class="value" id="blinkRateValue">0 bpm</span>
+                </div>
+            </div>
+
+            <div class="legend">
+                <div class="legend-item"><span class="dot success"></span><span>Healthy Eyes — within personal baseline</span></div>
+                <div class="legend-item"><span class="dot warning"></span><span>Minor Issues — fatigue / irritation / watering</span></div>
+                <div class="legend-item"><span class="dot danger"></span><span>Micro-Trauma — significant neurological deviation</span></div>
+            </div>
+
+            <div class="chart-container">
+                <div class="chart-label">Saccadic Velocity Signal</div>
+                <canvas id="velocityChart"></canvas>
+            </div>
+        </div>
+    </main>
+</div>
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+<script src="/static/app.js"></script>
+</body>
+</html>

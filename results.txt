@@ -1,0 +1,9 @@
+Final Model AUC: 0.9997
+              precision    recall  f1-score   support
+
+    Baseline       1.00      0.99      0.99     58426
+    Strained       0.99      1.00      0.99     58608
+
+    accuracy                           0.99    117034
+   macro avg       0.99      0.99      0.99    117034
+weighted avg       0.99      0.99      0.99    117034
