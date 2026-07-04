@@ -83,23 +83,268 @@ function getBlinkRate() {
     return blinkCount / Math.max(sec, 1);
 }
 
-// ── API calls ──────────────────────────────────────────────────
-async function sendCalibrate(windows) {
-    const res = await fetch('/calibrate', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ session_id: sessionId, windows, blink_rate: getBlinkRate() })
+// ── In-memory session storage (client side) ────────────────────
+let baselineBiomarkers = null;
+
+// ── Math Helpers ───────────────────────────────────────────────
+function mean(arr) {
+    if (!arr || arr.length === 0) return 0;
+    return arr.reduce((a, b) => a + b, 0) / arr.length;
+}
+
+function std(arr, meanVal) {
+    if (!arr || arr.length === 0) return 0;
+    const avg = meanVal !== undefined ? meanVal : mean(arr);
+    const sqDiff = arr.map(x => (x - avg) * (x - avg));
+    return Math.sqrt(mean(sqDiff));
+}
+
+function computeBiomarkers(velocities, accels, blinkRateHz) {
+    const v = velocities;
+    const a = accels;
+    const meanVel = mean(v);
+    const stdVel = std(v, meanVel);
+    const velCv = stdVel / (meanVel + 1e-6);
+    
+    // np.diff(v)
+    const velDiff = [];
+    for (let i = 0; i < v.length - 1; i++) {
+        velDiff.push(v[i+1] - v[i]);
+    }
+    
+    // np.sign(vel_diff)
+    const signs = velDiff.map(x => {
+        if (x > 0) return 1;
+        if (x < 0) return -1;
+        return 0;
     });
-    return res.json();
+    
+    // np.diff(np.sign(vel_diff)) != 0
+    let signChanges = 0;
+    for (let i = 0; i < signs.length - 1; i++) {
+        if (signs[i+1] !== signs[i]) {
+            signChanges++;
+        }
+    }
+    const tremorIndex = signChanges / Math.max(velDiff.length - 1, 1);
+    
+    // fixation_mask = v < (mean_vel * 0.3)
+    const fixationVelocities = v.filter(x => x < meanVel * 0.3);
+    const fixationInstability = fixationVelocities.length > 3 ? std(fixationVelocities) : 0.0;
+    
+    const absAcc = a.map(x => Math.abs(x));
+    const meanAccAbs = mean(absAcc);
+    const accelIrregularity = meanAccAbs / (meanVel + 1e-6);
+    
+    // find_peaks(v, height=mean_vel * 1.5, distance=3)
+    const peakHeight = meanVel * 1.5;
+    const peaks = [];
+    for (let i = 1; i < v.length - 1; i++) {
+        if (v[i] > peakHeight && v[i] > v[i-1] && v[i] > v[i+1]) {
+            if (peaks.length === 0 || (i - peaks[peaks.length - 1]) >= 3) {
+                peaks.push(i);
+            }
+        }
+    }
+    
+    return {
+        mean_vel: meanVel,
+        std_vel: stdVel,
+        vel_cv: velCv,
+        tremor_index: tremorIndex,
+        fixation_instability: fixationInstability,
+        accel_irregularity: accelIrregularity,
+        max_vel: v.length > 0 ? Math.max(...v) : 0,
+        saccade_count: peaks.length,
+        blink_rpm: blinkRateHz * 60.0
+    };
+}
+
+function classifyAbsolute(bm) {
+    const v_cv = bm.vel_cv;
+    const ti   = bm.tremor_index;
+    const ai   = bm.accel_irregularity;
+    const bpm  = bm.blink_rpm;
+
+    const cv_score     = Math.min((Math.max(v_cv - 1.2, 0) / 2.5) * 35, 35);
+    const tremor_score = Math.min((Math.max(ti - 0.55, 0) / 0.30) * 35, 35);
+    const acc_score    = Math.min((Math.max(ai - 3.5, 0) / 7.0)  * 20, 20);
+    const score = cv_score + tremor_score + acc_score;
+
+    if (bpm > 35 && score < 52) {
+        return {
+            prediction: 'Minor Issues',
+            probability: Math.min(0.45 + (bpm - 30) / 100, 0.72),
+            score: score,
+            reason: `High blink rate (${bpm.toFixed(0)} bpm) — possible eye irritation.`
+        };
+    }
+
+    if (score >= 55) {
+        return {
+            prediction: 'Micro-Trauma Detected',
+            probability: Math.min(0.62 + score / 300, 0.96),
+            score: score,
+            reason: `Erratic saccadic profile (CV=${v_cv.toFixed(2)}, tremor=${ti.toFixed(2)}).`
+        };
+    }
+    if (score >= 28) {
+        return {
+            prediction: 'Minor Issues',
+            probability: Math.min(0.35 + score / 150, 0.72),
+            score: score,
+            reason: `Mildly irregular movement (tremor=${ti.toFixed(2)}) — possible fatigue.`
+        };
+    }
+    return {
+        prediction: 'Healthy Eyes',
+        probability: Math.max(0.08, 0.18 - score / 180),
+        score: score,
+        reason: `Normal saccadic profile (score=${score.toFixed(1)}/55).`
+    };
+}
+
+function classifyWithBaseline(bm, baseline) {
+    function dev(cur, base, natural_spread) {
+        return (cur - base) / Math.max(natural_spread, 1e-6);
+    }
+
+    const tremor_dev = dev(bm.tremor_index,
+                           baseline.tremor_index,
+                           Math.max(baseline.tremor_index * 0.25, 0.04));
+
+    const cv_dev     = dev(bm.vel_cv,
+                           baseline.vel_cv,
+                           Math.max(baseline.vel_cv * 0.35, 0.15));
+
+    const acc_dev    = dev(bm.accel_irregularity,
+                           baseline.accel_irregularity,
+                           Math.max(baseline.accel_irregularity * 0.30, 0.5));
+
+    const bpm        = bm.blink_rpm;
+    const base_bpm   = Math.max(baseline.blink_rpm, 10.0);
+    const blink_dev  = (bpm - base_bpm) / Math.max(base_bpm * 0.5, 5.0);
+
+    // Scoring
+    let score = 0.0;
+    const reasons = [];
+
+    if (tremor_dev > 3.5) {
+        score += 45; reasons.push(`severe tremor increase (${bm.tremor_index.toFixed(2)} vs baseline ${baseline.tremor_index.toFixed(2)})`);
+    } else if (tremor_dev > 2.0) {
+        score += 25; reasons.push(`elevated tremor (${bm.tremor_index.toFixed(2)} vs ${baseline.tremor_index.toFixed(2)})`);
+    } else if (tremor_dev > 1.0) {
+        score += 10;
+    }
+
+    if (cv_dev > 3.5) {
+        score += 35; reasons.push(`very erratic saccades (CV=${bm.vel_cv.toFixed(2)})`);
+    } else if (cv_dev > 2.0) {
+        score += 18; reasons.push(`irregular saccadic pattern`);
+    } else if (cv_dev > 1.0) {
+        score += 8;
+    }
+
+    if (acc_dev > 3.5) {
+        score += 20; reasons.push('high jerk irregularity');
+    } else if (acc_dev > 2.0) {
+        score += 10;
+    }
+
+    if (blink_dev > 2.0 && bpm > 28) {
+        score += 12; reasons.push(`elevated blink rate (${bpm.toFixed(0)} bpm vs baseline ${base_bpm.toFixed(0)})`);
+    }
+
+    if (score >= 50) {
+        const reason = reasons.length > 0 ? 'Significant deviation from your baseline: ' + reasons.join(', ')
+                                          : 'Multiple abnormal biomarkers vs your personal baseline.';
+        return {
+            prediction: 'Micro-Trauma Detected',
+            probability: Math.min(0.65 + score / 300, 0.96),
+            score: score,
+            reason: reason
+        };
+    } else if (score >= 18) {
+        const reason = reasons.length > 0 ? 'Mild deviation from your baseline: ' + reasons.join(', ')
+                                          : 'Slightly elevated biomarkers vs your personal baseline.';
+        return {
+            prediction: 'Minor Issues',
+            probability: Math.min(0.35 + score / 150, 0.72),
+            score: score,
+            reason: reason
+        };
+    } else {
+        return {
+            prediction: 'Healthy Eyes',
+            probability: Math.max(0.06, 0.18 - score / 200),
+            score: score,
+            reason: `Eye movement consistent with your personal baseline (deviation=${score.toFixed(0)}).`
+        };
+    }
+}
+
+// ── Local API Simulation ───────────────────────────────────────
+async function sendCalibrate(windows) {
+    await new Promise(resolve => setTimeout(resolve, 300));
+    
+    const all_bm = [];
+    for (const window of windows) {
+        if (window.length === 50) {
+            const velocities = window.map(w => w[0]);
+            const accels = window.map(w => w[1]);
+            const bm = computeBiomarkers(velocities, accels, getBlinkRate());
+            all_bm.push(bm);
+        }
+    }
+    
+    if (all_bm.length === 0) {
+        return { error: 'No valid windows' };
+    }
+    
+    const keys = Object.keys(all_bm[0]);
+    const baseline = {};
+    for (const k of keys) {
+        const values = all_bm.map(b => b[k]);
+        baseline[k] = mean(values);
+    }
+    
+    baselineBiomarkers = baseline;
+    return { status: 'ok', baseline: baseline };
 }
 
 async function sendPredict(sequences) {
-    const res = await fetch('/predict', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ session_id: sessionId, sequences, blink_rate: getBlinkRate() })
-    });
-    return res.json();
+    await new Promise(resolve => setTimeout(resolve, 50));
+    
+    if (sequences.length !== 50) {
+        return { error: `Invalid shape ${sequences.length}` };
+    }
+    
+    const velocities = sequences.map(s => s[0]);
+    const accels = sequences.map(s => s[1]);
+    
+    const vMean = mean(velocities);
+    const vStd = std(velocities, vMean);
+    if (vMean < 0.3 && vStd < 0.3) {
+        return {
+            prediction: 'Healthy Eyes',
+            probability: 0.08,
+            score: 0,
+            reason: 'Very stable fixation detected.',
+            calibrated: baselineBiomarkers !== null
+        };
+    }
+    
+    const bm = computeBiomarkers(velocities, accels, getBlinkRate());
+    let result;
+    if (baselineBiomarkers) {
+        result = classifyWithBaseline(bm, baselineBiomarkers);
+        result.calibrated = true;
+    } else {
+        result = classifyAbsolute(bm);
+        result.calibrated = false;
+    }
+    
+    return result;
 }
 
 // ── UI updaters ────────────────────────────────────────────────

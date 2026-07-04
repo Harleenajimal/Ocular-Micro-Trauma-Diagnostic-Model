@@ -1,7 +1,7 @@
 from flask import Flask, request, jsonify, render_template
 import numpy as np
 
-app = Flask(__name__, template_folder='templates', static_folder='static')
+app = Flask(__name__, template_folder='.', static_folder='.', static_url_path='')
 
 # In-memory session storage: session_id -> baseline biomarkers
 sessions = {}
